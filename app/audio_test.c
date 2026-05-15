@@ -42,6 +42,14 @@ bool audio_test_init(void)
 
 void audio_test_play_tone(uint32_t freq_hz, uint32_t duration_ms)
 {
+    // wav_player_stop() leaves the dout SM enabled but mid-I2S-frame
+    // (OSR/PC at whatever bit it was clocking when DMA aborted), so
+    // a synchronous push lands misaligned and the codec ignores it —
+    // hence the "volume beep doesn't play sometimes" symptom right
+    // after a voiceline ends. Re-init the SM so we always start on a
+    // clean frame boundary.
+    audio_dout_reset();
+
     const uint32_t fs = pico_audio.sample_freq; // configured to 24000
     const float w = 2.0f * M_PI * (float)freq_hz / (float)fs;
     const int16_t amplitude = 12000; // ~37% of int16 max — easy on the ears

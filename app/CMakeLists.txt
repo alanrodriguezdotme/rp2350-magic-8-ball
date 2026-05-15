@@ -37,6 +37,7 @@ include_directories(../lib/AMOLED)
 include_directories(../lib/Touch)
 include_directories(../lib/QMI8658)
 include_directories(../lib/PCF85063A)
+include_directories(../lib/AXP2101)
 include_directories(../lib/audio_pio)
 include_directories(../lib/es8311)
 include_directories(../lib/lvgl)
@@ -49,6 +50,7 @@ target_link_libraries(app PUBLIC
     Touch
     PCF85063A
     QMI8658
+    AXP2101
     audio_pio
     es8311
     LVGL

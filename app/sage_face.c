@@ -219,6 +219,22 @@ static lv_obj_t *s_resp_container = NULL;
 static lv_obj_t *s_resp_outline[4] = {0};
 static lv_obj_t *s_resp_fill = NULL;
 
+// Top status bar — battery on the left, volume tier on the right. Hidden
+// by default; pops up briefly when the volume button is pressed and then
+// auto-fades. Both labels live inside translucent black pill backgrounds
+// so they stay readable over the face.
+#define STATUS_BAR_FADE_MS 200
+#define STATUS_BAR_HOLD_MS 1000
+#define STATUS_BAR_TOP_PAD 12
+#define STATUS_BAR_SIDE_PAD 12
+#define STATUS_BAR_PILL_PAD_X 10
+#define STATUS_BAR_PILL_PAD_Y 4
+static lv_obj_t *s_status_left_pill = NULL;
+static lv_obj_t *s_status_left_label = NULL;
+static lv_obj_t *s_status_right_pill = NULL;
+static lv_obj_t *s_status_right_label = NULL;
+static lv_timer_t *s_status_hide_timer = NULL;
+
 // True while the blink anim owns the eye height. apply_eye_open() must
 // not fight it during this window.
 static bool s_blinking = false;
@@ -355,6 +371,42 @@ void sage_face_init(void)
     lv_obj_set_style_text_font(s_resp_fill, &lv_font_montserrat_24, 0);
     lv_obj_align(s_resp_fill, LV_ALIGN_CENTER, 0, 0);
     lv_label_set_text_static(s_resp_fill, "");
+
+    // Top status bar pills (battery + volume). Created hidden — only the
+    // volume button shows them, briefly. Built on the screen so they stay
+    // pinned to the corners while the head sways.
+    for (int side = 0; side < 2; side++)
+    {
+        lv_obj_t *pill = lv_obj_create(scr);
+        lv_obj_remove_style_all(pill);
+        lv_obj_set_size(pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(pill, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(pill, LV_OPA_70, 0);
+        lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_pad_hor(pill, STATUS_BAR_PILL_PAD_X, 0);
+        lv_obj_set_style_pad_ver(pill, STATUS_BAR_PILL_PAD_Y, 0);
+        lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_opa(pill, LV_OPA_TRANSP, 0);
+
+        lv_obj_t *label = lv_label_create(pill);
+        lv_obj_set_style_text_color(label, lv_color_white(), 0);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+        lv_label_set_text(label, "");
+
+        if (side == 0)
+        {
+            lv_obj_align(pill, LV_ALIGN_TOP_LEFT, STATUS_BAR_SIDE_PAD, STATUS_BAR_TOP_PAD);
+            s_status_left_pill = pill;
+            s_status_left_label = label;
+        }
+        else
+        {
+            lv_obj_align(pill, LV_ALIGN_TOP_RIGHT, -STATUS_BAR_SIDE_PAD, STATUS_BAR_TOP_PAD);
+            s_status_right_pill = pill;
+            s_status_right_label = label;
+        }
+    }
 }
 
 // ============================================================================
@@ -470,6 +522,69 @@ void sage_face_show_response(const char *text)
 void sage_face_hide_response(void)
 {
     resp_fade_to(LV_OPA_TRANSP);
+}
+
+// ----- top status bar (auto-hiding) ---------------------------------------
+
+static void anim_obj_opa(void *obj, int32_t v)
+{
+    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, 0);
+}
+
+static void status_bar_fade_to(lv_opa_t target)
+{
+    lv_obj_t *pills[2] = {s_status_left_pill, s_status_right_pill};
+    for (int i = 0; i < 2; i++)
+    {
+        if (!pills[i])
+            continue;
+        lv_anim_del(pills[i], anim_obj_opa);
+        lv_opa_t cur = lv_obj_get_style_opa(pills[i], 0);
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, pills[i]);
+        lv_anim_set_values(&a, cur, target);
+        lv_anim_set_time(&a, STATUS_BAR_FADE_MS);
+        lv_anim_set_exec_cb(&a, anim_obj_opa);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+        lv_anim_start(&a);
+    }
+}
+
+static void status_bar_hide_cb(lv_timer_t *t)
+{
+    (void)t;
+    status_bar_fade_to(LV_OPA_TRANSP);
+    s_status_hide_timer = NULL;
+}
+
+void sage_face_show_status_bar(const char *left_text, const char *right_text)
+{
+    if (!s_status_left_label || !s_status_right_label)
+        return;
+
+    lv_label_set_text(s_status_left_label, left_text ? left_text : "");
+    lv_label_set_text(s_status_right_label, right_text ? right_text : "");
+
+    // Re-align after the text change so the right-side pill stays
+    // anchored to the right edge as its width changes.
+    lv_obj_align(s_status_left_pill, LV_ALIGN_TOP_LEFT,
+                 STATUS_BAR_SIDE_PAD, STATUS_BAR_TOP_PAD);
+    lv_obj_align(s_status_right_pill, LV_ALIGN_TOP_RIGHT,
+                 -STATUS_BAR_SIDE_PAD, STATUS_BAR_TOP_PAD);
+
+    status_bar_fade_to(LV_OPA_COVER);
+
+    if (s_status_hide_timer)
+    {
+        lv_timer_reset(s_status_hide_timer);
+    }
+    else
+    {
+        s_status_hide_timer = lv_timer_create(status_bar_hide_cb,
+                                              STATUS_BAR_HOLD_MS, NULL);
+        lv_timer_set_repeat_count(s_status_hide_timer, 1);
+    }
 }
 
 static void anim_head_opa(void *obj, int32_t v)
