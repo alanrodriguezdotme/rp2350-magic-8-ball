@@ -39,4 +39,14 @@ void sage_face_lipsync(uint8_t rms_0_255, uint8_t zcr_0_255);
 // external hold so the auto-decay timer can run normally.
 void sage_face_set_listening(bool listening);
 
+// Show a caption-style response at the bottom of the screen. White text
+// with a black outline; fades in over ~300 ms. The text pointer must
+// remain valid for the lifetime of the displayed caption (the label
+// uses lv_label_set_text_static and does not copy). Passing NULL is
+// equivalent to sage_face_hide_response().
+void sage_face_show_response(const char *text);
+
+// Fade the response text out over ~300 ms.
+void sage_face_hide_response(void);
+
 #endif // SAGE_FACE_H

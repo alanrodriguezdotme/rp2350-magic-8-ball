@@ -2,6 +2,7 @@
 #include "lvgl_glue.h"
 #include "sage_face.h"
 #include "sage_tone.h"
+#include "sage_text.h"
 #include "audio_test.h"
 #include "shake_detect.h"
 #include "sd.h"
@@ -130,6 +131,7 @@ int app_run(void)
                 // sample; the lipsync low-pass would otherwise hold
                 // the last RMS value visibly.
                 sage_face_lipsync(0, 128);
+                sage_face_hide_response();
                 shake_detect_reset();
             }
         }
@@ -158,6 +160,15 @@ int app_run(void)
                     break;
                 }
                 sage_face_set_pose(pose);
+                // Caption: show the spoken line on screen (white fill,
+                // black outline) for the duration of playback. Text
+                // pointer comes from the static sage_text_table so the
+                // label can keep using it without copying.
+                const char *caption = sage_text_from_path(path);
+                if (caption)
+                {
+                    sage_face_show_response(caption);
+                }
                 printf("[face] pose=%d for %s\r\n", (int)pose, path);
             }
             else

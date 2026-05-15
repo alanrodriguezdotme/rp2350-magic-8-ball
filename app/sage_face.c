@@ -42,11 +42,11 @@
 #define BROW_Y_OFFSET (-2)
 
 #define MOUTH_W 64
-#define MOUTH_THICK 5
-#define MOUTH_Y_OFFSET 70 // distance below face center; with eyes
-                          // at -20 (eye bottom ~y=2) this leaves
-                          // ~70 px of breathing room.
-#define MOUTH_MAX_OPEN 60 // peak vertical gap at full lipsync drive
+#define MOUTH_THICK 7
+#define MOUTH_Y_OFFSET 70  // distance below face center; with eyes
+                           // at -20 (eye bottom ~y=2) this leaves
+                           // ~70 px of breathing room.
+#define MOUTH_MAX_OPEN 110 // peak vertical gap at full lipsync drive
 #define MOUTH_CORNER_RANGE 10
 
 #define THIRD_EYE_DIA 24
@@ -208,6 +208,17 @@ static lv_timer_t *s_phys_timer = NULL;
 static uint32_t s_listen_until_ms = 0;
 static bool s_listen_external = false;
 
+// On-screen response caption (white text + black outline, fades in/out).
+// Built on the SCREEN, not the head container — the caption stays put
+// while the face wanders.
+#define RESPONSE_FADE_MS 300
+#define RESPONSE_BOTTOM_PAD 30
+#define RESPONSE_SIDE_PAD 16
+#define RESPONSE_OUTLINE_PX 2
+static lv_obj_t *s_resp_container = NULL;
+static lv_obj_t *s_resp_outline[4] = {0};
+static lv_obj_t *s_resp_fill = NULL;
+
 // True while the blink anim owns the eye height. apply_eye_open() must
 // not fight it during this window.
 static bool s_blinking = false;
@@ -297,6 +308,50 @@ void sage_face_init(void)
     // Physics tick at 50 Hz reads the IMU and integrates head position.
     // Independent of pose state — it just keeps running.
     s_phys_timer = lv_timer_create(physics_timer_cb, PHYS_TICK_MS, NULL);
+
+    // Response caption: 4 black labels offset by ±RESPONSE_OUTLINE_PX
+    // (cardinal directions) draw the outline, with a centered white
+    // label on top. Container sits at the screen bottom; opacity is
+    // animated for fade-in / fade-out.
+    s_resp_container = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_resp_container);
+    lv_obj_set_size(s_resp_container, DISP_HOR_RES - 2 * RESPONSE_SIDE_PAD, LV_SIZE_CONTENT);
+    lv_obj_align(s_resp_container, LV_ALIGN_BOTTOM_MID, 0, -RESPONSE_BOTTOM_PAD);
+    lv_obj_clear_flag(s_resp_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_resp_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(s_resp_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(s_resp_container, 0, 0);
+    lv_obj_set_style_opa(s_resp_container, LV_OPA_TRANSP, 0);
+
+    static const struct
+    {
+        int dx, dy;
+    } off[4] = {
+        {-RESPONSE_OUTLINE_PX, 0},
+        {RESPONSE_OUTLINE_PX, 0},
+        {0, -RESPONSE_OUTLINE_PX},
+        {0, RESPONSE_OUTLINE_PX},
+    };
+    const lv_coord_t label_w = DISP_HOR_RES - 2 * RESPONSE_SIDE_PAD;
+    for (int i = 0; i < 4; i++)
+    {
+        s_resp_outline[i] = lv_label_create(s_resp_container);
+        lv_obj_set_width(s_resp_outline[i], label_w);
+        lv_label_set_long_mode(s_resp_outline[i], LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(s_resp_outline[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(s_resp_outline[i], lv_color_black(), 0);
+        lv_obj_set_style_text_font(s_resp_outline[i], &lv_font_montserrat_24, 0);
+        lv_obj_align(s_resp_outline[i], LV_ALIGN_CENTER, off[i].dx, off[i].dy);
+        lv_label_set_text_static(s_resp_outline[i], "");
+    }
+    s_resp_fill = lv_label_create(s_resp_container);
+    lv_obj_set_width(s_resp_fill, label_w);
+    lv_label_set_long_mode(s_resp_fill, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(s_resp_fill, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(s_resp_fill, lv_color_white(), 0);
+    lv_obj_set_style_text_font(s_resp_fill, &lv_font_montserrat_24, 0);
+    lv_obj_align(s_resp_fill, LV_ALIGN_CENTER, 0, 0);
+    lv_label_set_text_static(s_resp_fill, "");
 }
 
 // ============================================================================
@@ -367,6 +422,51 @@ void sage_face_set_listening(bool listening)
         // sets `false`.
         s_listen_until_ms = lv_tick_get() + LISTEN_HOLD_MS;
     }
+}
+
+static void anim_resp_opa(void *obj, int32_t v)
+{
+    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, 0);
+}
+
+static void resp_fade_to(lv_opa_t target)
+{
+    if (!s_resp_container)
+        return;
+    lv_anim_del(s_resp_container, anim_resp_opa);
+    lv_opa_t cur = lv_obj_get_style_opa(s_resp_container, 0);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_resp_container);
+    lv_anim_set_values(&a, cur, target);
+    lv_anim_set_time(&a, RESPONSE_FADE_MS);
+    lv_anim_set_exec_cb(&a, anim_resp_opa);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_start(&a);
+}
+
+void sage_face_show_response(const char *text)
+{
+    if (!s_resp_container)
+        return;
+    if (!text)
+    {
+        sage_face_hide_response();
+        return;
+    }
+    // text pointer must outlive the caption — caller is expected to
+    // pass a string literal or pointer into the static sage_text_table.
+    for (int i = 0; i < 4; i++)
+    {
+        lv_label_set_text_static(s_resp_outline[i], text);
+    }
+    lv_label_set_text_static(s_resp_fill, text);
+    resp_fade_to(LV_OPA_COVER);
+}
+
+void sage_face_hide_response(void)
+{
+    resp_fade_to(LV_OPA_TRANSP);
 }
 
 // ============================================================================
@@ -460,7 +560,13 @@ static void apply_mouth(int8_t curve, int8_t rest_open, uint8_t lipsync_open, in
 {
     const int center_y = MOUTH_W / 2;
 
-    int open = rest_open + ((int)lipsync_open * MOUTH_MAX_OPEN) / 255;
+    // 2x input gain so quieter voicelines still drive the mouth across
+    // the full open range. Saturates at 255.
+    int gained_open = (int)lipsync_open * 2;
+    if (gained_open > 255)
+        gained_open = 255;
+
+    int open = rest_open + (gained_open * MOUTH_MAX_OPEN) / 255;
     if (open > MOUTH_MAX_OPEN)
         open = MOUTH_MAX_OPEN;
 

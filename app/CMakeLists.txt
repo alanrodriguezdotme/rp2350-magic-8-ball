@@ -17,6 +17,20 @@ add_custom_command(
     VERBATIM
 )
 
+# Same idea, but for the on-screen response text table.
+set(SAGE_TEXT_GEN ${CMAKE_CURRENT_BINARY_DIR}/sage_text_table.gen.c)
+add_custom_command(
+    OUTPUT ${SAGE_TEXT_GEN}
+    COMMAND ${POWERSHELL_EXE} -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_SOURCE_DIR}/tools/gen_voicelines_text.ps1
+            -ScriptMd ${CMAKE_SOURCE_DIR}/voicelines/SCRIPT.md
+            -Output ${SAGE_TEXT_GEN}
+    DEPENDS ${CMAKE_SOURCE_DIR}/voicelines/SCRIPT.md
+            ${CMAKE_SOURCE_DIR}/tools/gen_voicelines_text.ps1
+    COMMENT "Generating sage_text_table.gen.c from voicelines/SCRIPT.md"
+    VERBATIM
+)
+
 include_directories(../lib/Config)
 include_directories(../lib/QSPI_PIO)
 include_directories(../lib/AMOLED)
@@ -28,7 +42,7 @@ include_directories(../lib/es8311)
 include_directories(../lib/lvgl)
 include_directories(.)
 
-add_library(app ${DIR_APP_SRCS} ${SAGE_TONE_GEN})
+add_library(app ${DIR_APP_SRCS} ${SAGE_TONE_GEN} ${SAGE_TEXT_GEN})
 target_link_libraries(app PUBLIC
     Config
     AMOLED
