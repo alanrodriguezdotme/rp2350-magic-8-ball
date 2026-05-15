@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // Streams a 24 kHz / mono / 16-bit signed PCM WAV file off the SD card to
 // the ES8311 codec via PIO2 SM0, fed by self-chained ping-pong DMA on
@@ -23,3 +24,11 @@ bool wav_player_is_playing(void);
 void wav_player_poll(void);
 
 void wav_player_stop(void);
+
+// Lipsync stats from the most recently loaded audio chunk (~170 ms
+// granularity at 24 kHz / 4096-sample buffers). Both 0..255.
+//   rms : amplitude envelope, perceptually mapped (clamped at ~12000 RMS
+//         before normalization so typical-loud speech reaches 255)
+//   zcr : zero-crossing rate, 0 = sustained vowel, 255 = sibilant
+// Returns 0 for both when no file is playing. Either output may be NULL.
+void wav_player_get_lipsync(uint8_t *rms_out, uint8_t *zcr_out);

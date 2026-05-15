@@ -1,9 +1,14 @@
 #include "app.h"
 #include "lvgl_glue.h"
 #include "sage_face.h"
+#include "sage_tone.h"
+#include "sage_text.h"
 #include "audio_test.h"
+#include "boot_button.h"
 #include "shake_detect.h"
+#include "sfx.h"
 #include "sd.h"
+#include "volume.h"
 #include "wav_player.h"
 #include "voicelines.h"
 
@@ -22,7 +27,8 @@
 
 int app_run(void)
 {
-    if (DEV_Module_Init() != 0) {
+    if (DEV_Module_Init() != 0)
+    {
         return -1;
     }
 
@@ -31,7 +37,8 @@ int app_run(void)
     // If no host shows up, fall through and keep going — board still works
     // headless.
     stdio_init_all();
-    for (int i = 0; i < 30 && !stdio_usb_connected(); i++) {
+    for (int i = 0; i < 30 && !stdio_usb_connected(); i++)
+    {
         sleep_ms(100);
     }
 
@@ -55,20 +62,27 @@ int app_run(void)
 
     printf("Magic 8-Ball: sage is awake.\r\n");
 
-    // Audio bring-up: codec + amp + a brief 440Hz beep so we know the
-    // speaker is alive. Replace with real WAV playback later.
-    if (audio_test_init()) {
-        printf("Magic 8-Ball: codec OK, beeping...\r\n");
-        audio_test_play_tone(440, 800);
-    } else {
+    // Audio bring-up: codec + amp. Volume tier is initialized first so
+    // the codec's volume register is set to a known value (mid by
+    // default) before any playback. The historical 440 Hz boot beep is
+    // gone \u2014 we play voicelines/sfx/answer.wav with a face fade-in
+    // instead, once the SD card and wav_player are up.
+    if (audio_test_init())
+    {
+        printf("Magic 8-Ball: codec OK.\r\n");
+    }
+    else
+    {
         printf("Magic 8-Ball: codec FAILED to init.\r\n");
     }
+    volume_init();
 
     // SD card bring-up. Failure is non-fatal so we can still boot the
     // sage face and serial debug; WAV playback will just no-op once it
     // exists.
     bool sd_ok = sd_card_mount();
-    if (sd_ok) {
+    if (sd_ok)
+    {
         sd_card_list_root();
     }
 
@@ -78,46 +92,213 @@ int app_run(void)
     wav_player_init();
 
     bool vl_ok = false;
-    if (sd_ok) {
+    if (sd_ok)
+    {
         vl_ok = voicelines_scan("0:/voicelines");
     }
 
     shake_detect_init();
 
+    // -------------------------------------------------------------------
+    // Boot intro: play answer.wav while the face fades in. We pump the
+    // LVGL + wav_player loop synchronously here until playback ends so
+    // the user always sees the full intro before the main loop takes
+    // over. If answer.wav can't play (no SD, missing file), we still do
+    // the visual fade so the device doesn't sit blank.
+    // -------------------------------------------------------------------
+    bool intro_playing = sd_ok && sfx_play(SFX_ANSWER_PATH);
+    sage_face_fade_in(2500);
+    if (intro_playing)
+    {
+        // Don't drive lipsync here — answer.wav is an SFX, not the
+        // sage's voice, so the mouth should stay at its idle resting
+        // position while it plays.
+        while (wav_player_is_playing())
+        {
+            lv_task_handler();
+            wav_player_poll();
+            DEV_Delay_ms(5);
+        }
+        sage_face_set_pose(SAGE_POSE_IDLE);
+    }
+    shake_detect_reset();
+
+    // -------------------------------------------------------------------
+    // Main loop state machine.
+    //
+    //   IDLE     -> waiting for user motion. Polls shake_detect.
+    //   SHAKING  -> shake.wav playing while user holds the shake; we
+    //               poll for ABORTED (stop sfx, back to IDLE) or
+    //               FIRED (transition to INTRO).
+    //   INTRO    -> answer.wav playing as the response intro.
+    //               When it ends, pick a voiceline and go to SPEAKING.
+    //   SPEAKING -> voiceline playing with caption + speaking pose.
+    //               When it ends, back to IDLE.
+    //
+    // Lipsync feeding and the BOOT-button volume cycle run in every
+    // state. The volume cycle is gated on \"no audio currently playing\"
+    // so the preview tone doesn't collide with a voiceline.
+    // -------------------------------------------------------------------
+    typedef enum
+    {
+        ST_IDLE = 0,
+        ST_SHAKING,
+        ST_INTRO,
+        ST_SPEAKING,
+    } app_state_t;
+    app_state_t state = ST_IDLE;
+    const char *pending_voiceline = NULL;
+
     uint32_t tick = 0;
-    bool was_playing = false;
-    while (1) {
+    while (1)
+    {
         lv_task_handler();
         wav_player_poll();
 
         bool playing = wav_player_is_playing();
-        if (playing != was_playing) {
-            // Drive the face animation off the same edge that gates
-            // shake detection. Speaking pose comes up the instant a WAV
-            // starts and drops back to idle when it finishes.
-            sage_face_set_speaking(playing);
-            if (was_playing && !playing) {
-                // Playback just ended: reset the shake detector so any
-                // residual motion from the user shaking *during* playback
-                // doesn't fire instantly.
-                shake_detect_reset();
-            }
-        }
-        was_playing = playing;
 
-        if (!playing && shake_detect_poll()) {
-            const char *path = vl_ok ? voicelines_pick_random() : NULL;
-            if (!path || !wav_player_play_file(path)) {
-                // No catalog or file open failed: stand-in beep so the
-                // shake at least produces audible feedback.
-                audio_test_play_tone(660, 400);
+        // Lipsync feed only runs while the *voiceline* is playing.
+        // shake.wav and answer.wav are SFX — the sage isn't speaking
+        // yet — so leave the mouth at its idle resting position. We
+        // still call lipsync(0,...) in non-speaking states so the
+        // smoothed mouth-open value bleeds back to zero between turns.
+        if (playing && state == ST_SPEAKING)
+        {
+            uint8_t rms = 0, zcr = 0;
+            wav_player_get_lipsync(&rms, &zcr);
+            sage_face_lipsync(rms, zcr);
+        }
+        else
+        {
+            sage_face_lipsync(0, 128);
+        }
+
+        // BOOT button cycles volume. Only honor it when no audio is
+        // playing so the preview beep doesn't trample a voiceline.
+        if (!playing && boot_button_just_pressed())
+        {
+            volume_cycle();
+        }
+
+        shake_event_t evt = shake_detect_poll();
+
+        switch (state)
+        {
+        case ST_IDLE:
+            if (evt == SHAKE_EVT_STARTED)
+            {
+                printf("[state] IDLE -> SHAKING\r\n");
+                sage_face_set_pose(SAGE_POSE_LISTENING);
+                if (!sfx_play(SFX_SHAKE_PATH))
+                {
+                    // Fallback so the user gets *some* feedback.
+                    audio_test_play_tone(660, 200);
+                }
+                state = ST_SHAKING;
             }
+            break;
+
+        case ST_SHAKING:
+            if (evt == SHAKE_EVT_ABORTED)
+            {
+                printf("[state] SHAKING -> IDLE (aborted)\r\n");
+                wav_player_stop();
+                sage_face_lipsync(0, 128);
+                sage_face_set_pose(SAGE_POSE_IDLE);
+                state = ST_IDLE;
+            }
+            else if (evt == SHAKE_EVT_FIRED)
+            {
+                printf("[state] SHAKING -> INTRO (fired)\r\n");
+                // shake.wav is ~2 s long and the hold is 2 s, so it
+                // typically ended on its own; stop just in case.
+                wav_player_stop();
+                pending_voiceline = vl_ok ? voicelines_pick_random() : NULL;
+                if (sfx_play(SFX_ANSWER_PATH))
+                {
+                    state = ST_INTRO;
+                }
+                else
+                {
+                    // No SFX file \u2014 skip the intro and jump straight
+                    // to the voiceline (or fallback beep) so the user
+                    // still gets an answer.
+                    audio_test_play_tone(660, 200);
+                    goto start_voiceline;
+                }
+            }
+            else if (!playing)
+            {
+                // shake.wav ended but the user is still shaking and the
+                // 2 s window hasn't elapsed yet. Leave the state alone;
+                // we'll either FIRE or ABORT shortly.
+            }
+            break;
+
+        case ST_INTRO:
+            if (!playing)
+            {
+                printf("[state] INTRO -> SPEAKING\r\n");
+            start_voiceline:
+                if (pending_voiceline && wav_player_play_file(pending_voiceline))
+                {
+                    sage_tone_t tone = sage_tone_from_path(pending_voiceline);
+                    sage_pose_kind_t pose;
+                    switch (tone)
+                    {
+                    case SAGE_TONE_OMINOUS:
+                        pose = SAGE_POSE_SPEAKING_OMINOUS;
+                        break;
+                    case SAGE_TONE_SARCASTIC:
+                        pose = SAGE_POSE_SPEAKING_SARCASTIC;
+                        break;
+                    case SAGE_TONE_DRY:
+                        pose = SAGE_POSE_SPEAKING_DRY;
+                        break;
+                    default:
+                        pose = SAGE_POSE_SPEAKING_OMINOUS;
+                        break;
+                    }
+                    sage_face_set_pose(pose);
+                    const char *caption = sage_text_from_path(pending_voiceline);
+                    if (caption)
+                    {
+                        sage_face_show_response(caption);
+                    }
+                    printf("[face] pose=%d for %s\r\n", (int)pose, pending_voiceline);
+                    state = ST_SPEAKING;
+                }
+                else
+                {
+                    // No voiceline catalog or open failed: stand-in
+                    // beep so something audible happens, then back to idle.
+                    audio_test_play_tone(660, 400);
+                    sage_face_set_pose(SAGE_POSE_IDLE);
+                    state = ST_IDLE;
+                    shake_detect_reset();
+                }
+                pending_voiceline = NULL;
+            }
+            break;
+
+        case ST_SPEAKING:
+            if (!playing)
+            {
+                printf("[state] SPEAKING -> IDLE\r\n");
+                sage_face_set_pose(SAGE_POSE_IDLE);
+                sage_face_lipsync(0, 128);
+                sage_face_hide_response();
+                shake_detect_reset();
+                state = ST_IDLE;
+            }
+            break;
         }
 
         DEV_Delay_ms(5);
         // Heartbeat every ~2s so we know main loop is alive.
-        if (++tick % 400 == 0) {
-            printf("[hb] tick=%lu\r\n", (unsigned long)tick);
+        if (++tick % 400 == 0)
+        {
+            printf("[hb] tick=%lu state=%d\r\n", (unsigned long)tick, (int)state);
         }
     }
 

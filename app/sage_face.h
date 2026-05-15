@@ -2,15 +2,57 @@
 #define SAGE_FACE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
-// Builds the parametric mystic-sage face on the active LVGL screen.
-// Idle pose: closed eyes, slow third-eye pulse.
+typedef enum
+{
+    SAGE_POSE_IDLE = 0,
+    SAGE_POSE_LISTENING,
+    SAGE_POSE_SPEAKING_OMINOUS,
+    SAGE_POSE_SPEAKING_SARCASTIC,
+    SAGE_POSE_SPEAKING_DRY,
+} sage_pose_kind_t;
+
+// Build the parametric mystic-sage face on the active LVGL screen.
+// Starts in SAGE_POSE_IDLE: half-lidded, no head sway, slow third-eye
+// pulse, occasional random blink.
 void sage_face_init(void);
 
-// Switch between idle and speaking poses. Speaking pose brightens and
-// speeds up the third-eye pulse and bobs the lips open/close so the
-// face looks like it's talking. Safe to call repeatedly with the same
-// value (no-op).
-void sage_face_set_speaking(bool speaking);
+// Cross-fade from current pose to `kind` over ~250 ms. Restarts the
+// head-sway and third-eye pulse animations with the new preset's
+// parameters. Calling with the same kind twice is a no-op.
+void sage_face_set_pose(sage_pose_kind_t kind);
+
+// Real-time lipsync. Both inputs are 0..255.
+//   rms  -> mouth openness (added on top of the pose's resting open)
+//   zcr  -> roundness vs flatness (low = vowel/round, high = sibilant/flat)
+// Call every main-loop iteration while audio is playing. The face
+// module low-passes internally with separate attack and release rates,
+// so calling at 200 Hz with a slowly-changing source value is fine.
+void sage_face_lipsync(uint8_t rms_0_255, uint8_t zcr_0_255);
+
+// Hint that the face should perk up like it's listening (eyes wider,
+// brows up, third eye pulses faster). External hook for when a mic
+// pipeline detects voice activity. Internally the face also auto-perks
+// on IMU-detected handling, so calling this is optional. Calling with
+// `false` does NOT force-cancel the auto-perk; it just clears the
+// external hold so the auto-decay timer can run normally.
+void sage_face_set_listening(bool listening);
+
+// Show a caption-style response at the bottom of the screen. White text
+// with a black outline; fades in over ~300 ms. The text pointer must
+// remain valid for the lifetime of the displayed caption (the label
+// uses lv_label_set_text_static and does not copy). Passing NULL is
+// equivalent to sage_face_hide_response().
+void sage_face_show_response(const char *text);
+
+// Fade the response text out over ~300 ms.
+void sage_face_hide_response(void);
+
+// Fade the entire face in from fully transparent to fully opaque over
+// `ms` milliseconds. Used for the boot intro so the sage materializes
+// instead of popping in. Calling more than once just restarts from the
+// current opacity.
+void sage_face_fade_in(uint32_t ms);
 
 #endif // SAGE_FACE_H

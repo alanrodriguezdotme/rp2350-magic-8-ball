@@ -73,6 +73,27 @@ re-enumerates as a new COM port. Open it from VS Code's serial monitor
 (or any terminal) at any baud — USB CDC ignores the rate. Last known port on
 this dev machine: **COM6**.
 
+## Controls
+
+- **Shake to ask.** Hold a vigorous shake for ~2 s. While you're shaking,
+  the device plays `shake.wav`. Stop shaking before 2 s and it cancels;
+  hold the full 2 s and it plays `answer.wav` followed by a random
+  voiceline.
+- **BOOT button cycles volume.** Tap the BOOT (BOOTSEL) button on the
+  board to cycle the codec volume through `LOW → MED → HIGH → LOW …`
+  (codec values 40 / 55 / 70). Each press also plays a brief 880 Hz
+  preview tone at the new level. Volume defaults to MED on power-up.
+  Presses are ignored while audio is playing so the preview tone can't
+  trample a voiceline.
+
+## SD card layout
+
+```
+0:/voicelines/*.wav   # 24 kHz / mono / 16-bit PCM, randomly picked answers
+0:/sfx/answer.wav     # boot intro + post-shake "ahem" before each answer
+0:/sfx/shake.wav      # ~2 s loop while user is holding the shake gesture
+```
+
 ## Project layout
 
 ```
