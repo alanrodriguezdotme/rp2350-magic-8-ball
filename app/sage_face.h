@@ -49,6 +49,14 @@ void sage_face_show_response(const char *text);
 // Fade the response text out over ~300 ms.
 void sage_face_hide_response(void);
 
+// Briefly show a translucent top status bar with `left_text` in the
+// top-left corner and `right_text` in the top-right corner, then auto-
+// fade it out after ~1 s. Used by the volume button to flash battery %
+// and the new volume tier without cluttering the main screen. Either
+// pointer may be NULL to leave that side blank. Strings are copied
+// internally so callers can pass a stack buffer.
+void sage_face_show_status_bar(const char *left_text, const char *right_text);
+
 // Fade the entire face in from fully transparent to fully opaque over
 // `ms` milliseconds. Used for the boot intro so the sage materializes
 // instead of popping in. Calling more than once just restarts from the

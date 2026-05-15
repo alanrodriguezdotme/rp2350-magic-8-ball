@@ -6,6 +6,7 @@
 #include "audio_test.h"
 #include "boot_button.h"
 #include "shake_detect.h"
+#include "sleep_mgr.h"
 #include "sfx.h"
 #include "sd.h"
 #include "volume.h"
@@ -18,6 +19,7 @@
 #include "FT3168.h"
 #include "QMI8658.h"
 #include "PCF85063A.h"
+#include "AXP2101.h"
 #include "lvgl.h"
 
 #include "pico/stdlib.h"
@@ -55,6 +57,10 @@ int app_run(void)
 
     FT3168_Init(FT3168_Point_Mode);
     PCF85063A_Init();
+    if (!AXP2101_Init())
+    {
+        printf("Magic 8-Ball: AXP2101 not detected; sleep/wake button will not work.\r\n");
+    }
     QMI8658_init();
 
     lvgl_glue_init();
@@ -98,6 +104,7 @@ int app_run(void)
     }
 
     shake_detect_init();
+    sleep_mgr_init();
 
     // -------------------------------------------------------------------
     // Boot intro: play answer.wav while the face fades in. We pump the
@@ -152,10 +159,28 @@ int app_run(void)
     uint32_t tick = 0;
     while (1)
     {
+        bool playing = wav_player_is_playing();
+
+        // Drive the sleep state machine first. While asleep we skip
+        // LVGL, wav_player, shake polling, and BOOT button polling
+        // entirely — that's where the bulk of the awake-vs-asleep
+        // CPU + I2C savings come from.
+        sleep_mgr_tick(playing);
+        if (sleep_mgr_is_asleep())
+        {
+            DEV_Delay_ms(20);
+            if (++tick % 100 == 0)
+            {
+                printf("[hb] tick=%lu state=ASLEEP\r\n", (unsigned long)tick);
+            }
+            continue;
+        }
+
         lv_task_handler();
         wav_player_poll();
 
-        bool playing = wav_player_is_playing();
+        // Re-check after wav_player_poll in case a file just ended.
+        playing = wav_player_is_playing();
 
         // Lipsync feed only runs while the *voiceline* is playing.
         // shake.wav and answer.wav are SFX — the sage isn't speaking
@@ -178,9 +203,61 @@ int app_run(void)
         if (!playing && boot_button_just_pressed())
         {
             volume_cycle();
+
+            // Flash battery % (top-left) and the new volume tier
+            // (top-right) for a beat so the user has visual confirmation
+            // and a way to glance at battery without cluttering the main
+            // screen. AXP2101 returns 0xFF when no battery is connected
+            // (USB-only on the bench); fall back to "?" for that case.
+            char left[16];
+            uint8_t pct = AXP2101_GetBatteryPercent();
+            const char *bat_icon;
+            if (pct == 0xFF)
+            {
+                bat_icon = LV_SYMBOL_BATTERY_EMPTY;
+                snprintf(left, sizeof(left), "%s ?", bat_icon);
+            }
+            else
+            {
+                if (pct > 87)
+                    bat_icon = LV_SYMBOL_BATTERY_FULL;
+                else if (pct > 62)
+                    bat_icon = LV_SYMBOL_BATTERY_3;
+                else if (pct > 37)
+                    bat_icon = LV_SYMBOL_BATTERY_2;
+                else if (pct > 12)
+                    bat_icon = LV_SYMBOL_BATTERY_1;
+                else
+                    bat_icon = LV_SYMBOL_BATTERY_EMPTY;
+                snprintf(left, sizeof(left), "%s %u%%", bat_icon, pct);
+            }
+
+            const char *right;
+            switch (volume_get_level())
+            {
+            case VOLUME_LOW:
+                right = "Quiet";
+                break;
+            case VOLUME_MED:
+                right = "Medium";
+                break;
+            case VOLUME_HIGH:
+            default:
+                right = "Loud";
+                break;
+            }
+            sage_face_show_status_bar(left, right);
         }
 
         shake_event_t evt = shake_detect_poll();
+
+        // Any motion (event OR sub-threshold hold) counts as activity
+        // so the user fiddling with the device pushes the sleep
+        // deadline out.
+        if (evt != SHAKE_EVT_NONE || shake_detect_is_shaking())
+        {
+            sleep_mgr_notify_activity();
+        }
 
         switch (state)
         {

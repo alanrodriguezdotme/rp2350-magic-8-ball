@@ -61,6 +61,7 @@ add_subdirectory(./lib/AMOLED)
 add_subdirectory(./lib/Touch)
 add_subdirectory(./lib/QMI8658)
 add_subdirectory(./lib/PCF85063A)
+add_subdirectory(./lib/AXP2101)
 add_subdirectory(./lib/audio_pio)
 add_subdirectory(./lib/es8311)
 add_subdirectory(./lib/lvgl)
@@ -73,6 +74,7 @@ include_directories(./lib/AMOLED)
 include_directories(./lib/Touch)
 include_directories(./lib/QMI8658)
 include_directories(./lib/PCF85063A)
+include_directories(./lib/AXP2101)
 include_directories(./lib/audio_pio)
 include_directories(./lib/es8311)
 include_directories(./lib/lvgl)
@@ -109,6 +111,7 @@ add_compile_options(-O2)
                         Touch
                         QMI8658
                         PCF85063A
+                        AXP2101
                         audio_pio
                         es8311
                         LVGL

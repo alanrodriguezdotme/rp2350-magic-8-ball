@@ -9,19 +9,20 @@
 #include "AMOLED_1in8.h"
 #include "qspi_pio.h"
 #include "FT3168.h"
+#include "sleep_mgr.h"
 #include "lvgl.h"
 
 #include "pico/stdlib.h"
 #include "hardware/dma.h"
 #include "hardware/irq.h"
 
-static lv_disp_drv_t      disp_drv;
+static lv_disp_drv_t disp_drv;
 static lv_disp_draw_buf_t disp_buf;
-static lv_color_t         buf0[DISP_HOR_RES * DISP_VER_RES];
+static lv_color_t buf0[DISP_HOR_RES * DISP_VER_RES];
 
 static lv_indev_drv_t indev_ts;
-static uint16_t       ts_x;
-static uint16_t       ts_y;
+static uint16_t ts_x;
+static uint16_t ts_y;
 static lv_indev_state_t ts_act = LV_INDEV_STATE_RELEASED;
 
 static struct repeating_timer lvgl_timer;
@@ -42,12 +43,12 @@ void lvgl_glue_init(void)
     lv_disp_drv_init(&disp_drv);
     disp_drv.flush_cb = disp_flush_cb;
     disp_drv.draw_buf = &disp_buf;
-    disp_drv.hor_res  = DISP_HOR_RES;
-    disp_drv.ver_res  = DISP_VER_RES;
+    disp_drv.hor_res = DISP_HOR_RES;
+    disp_drv.ver_res = DISP_VER_RES;
     lv_disp_drv_register(&disp_drv);
 
     lv_indev_drv_init(&indev_ts);
-    indev_ts.type    = LV_INDEV_TYPE_POINTER;
+    indev_ts.type = LV_INDEV_TYPE_POINTER;
     indev_ts.read_cb = ts_read_cb;
     lv_indev_drv_register(&indev_ts);
 
@@ -76,11 +77,15 @@ static void disp_flush_cb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t
 
 static void touch_callback(uint gpio, uint32_t events)
 {
-    if (gpio == Touch_INT_PIN) {
+    if (gpio == Touch_INT_PIN)
+    {
         FT3168_Get_Point();
-        ts_x   = FT3168.x_point;
-        ts_y   = FT3168.y_point;
+        ts_x = FT3168.x_point;
+        ts_y = FT3168.y_point;
         ts_act = LV_INDEV_STATE_PRESSED;
+        // Any touch counts as activity — even one that doesn't hit
+        // a widget keeps the sleep timer at bay.
+        sleep_mgr_notify_activity();
     }
 }
 
@@ -88,13 +93,14 @@ static void ts_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
     data->point.x = ts_x;
     data->point.y = ts_y;
-    data->state   = ts_act;
-    ts_act        = LV_INDEV_STATE_RELEASED;
+    data->state = ts_act;
+    ts_act = LV_INDEV_STATE_RELEASED;
 }
 
 static void dma_handler(void)
 {
-    if (dma_channel_get_irq0_status(dma_tx)) {
+    if (dma_channel_get_irq0_status(dma_tx))
+    {
         dma_channel_acknowledge_irq0(dma_tx);
         QSPI_Deselect(qspi);
         lv_disp_flush_ready(&disp_drv);
