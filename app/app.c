@@ -291,6 +291,10 @@ int app_run(void)
                 // typically ended on its own; stop just in case.
                 wav_player_stop();
                 pending_voiceline = vl_ok ? voicelines_pick_random() : NULL;
+                // Sparkle burst behind the face for the answer SFX —
+                // boot intro deliberately doesn't get this; it's the
+                // visual cue that the sage actually has an answer.
+                sage_face_burst_sparkles();
                 if (sfx_play(SFX_ANSWER_PATH))
                 {
                     state = ST_INTRO;

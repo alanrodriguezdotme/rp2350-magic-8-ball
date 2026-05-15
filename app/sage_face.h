@@ -63,4 +63,11 @@ void sage_face_show_status_bar(const char *left_text, const char *right_text);
 // current opacity.
 void sage_face_fade_in(uint32_t ms);
 
+// Fire a one-shot sparkle burst radiating outward from the third eye,
+// rendered behind the face features so the sage's silhouette occludes
+// the inner sparkles. Each sparkle is given a fresh random angle,
+// distance, and start delay so the burst looks organic. Calling again
+// while a previous burst is still in flight retargets the same pool.
+void sage_face_burst_sparkles(void);
+
 #endif // SAGE_FACE_H

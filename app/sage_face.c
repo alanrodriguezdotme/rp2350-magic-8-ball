@@ -48,9 +48,31 @@
                            // ~70 px of breathing room.
 #define MOUTH_MAX_OPEN 110 // peak vertical gap at full lipsync drive
 #define MOUTH_CORNER_RANGE 10
+// Fixed mouth bbox height. Sized so that even at MOUTH_MAX_OPEN plus
+// extreme curve, every point stays inside [0, MOUTH_BOX_H]. lv_line
+// auto-sizes to MAX(point.y), so without a locked size the top-lip and
+// bottom-lip bboxes diverge as the mouth opens, drifting their shared
+// corner endpoints to different absolute positions and producing X's at
+// the corners. Locking the size with lv_obj_set_size() keeps both lips
+// in identical bboxes so corners always coincide.
+#define MOUTH_BOX_H (MOUTH_W + MOUTH_MAX_OPEN)
 
 #define THIRD_EYE_DIA 24
 #define THIRD_EYE_Y_OFFSET (-90)
+
+// Sparkle burst (sage_face_burst_sparkles). Pool of small dots parented
+// to the head and z-ordered behind every face feature. On each burst,
+// every dot gets a fresh random angle / distance / start delay / size
+// and animates outward from the third-eye position with a quick fade-in,
+// then a longer fade-out. Tuned to read clearly even while the user is
+// still shaking the device.
+#define SPARKLE_COUNT 32
+#define SPARKLE_DIA_MIN 8
+#define SPARKLE_DIA_MAX 18
+#define SPARKLE_TRAVEL_MIN 130
+#define SPARKLE_TRAVEL_MAX 280
+#define SPARKLE_DURATION_MS 1500
+#define SPARKLE_DELAY_MAX_MS 220
 
 #define POSE_XFADE_MS 250
 
@@ -169,8 +191,12 @@ static sage_parts_t s_p;
 // mutating them.
 static lv_point_t s_brow_l_pts[3];
 static lv_point_t s_brow_r_pts[3];
-static lv_point_t s_mouth_top_pts[3];
-static lv_point_t s_mouth_bot_pts[3];
+// 7-point sine arc per lip (corner, 5 interior samples, corner). More
+// points = the kink at the apex disappears and you get a real curve
+// instead of a diamond/chevron.
+#define MOUTH_PT_COUNT 7
+static lv_point_t s_mouth_top_pts[MOUTH_PT_COUNT];
+static lv_point_t s_mouth_bot_pts[MOUTH_PT_COUNT];
 
 static sage_pose_kind_t s_pose_kind = SAGE_POSE_IDLE;
 static sage_pose_t s_pose_now;
@@ -238,6 +264,17 @@ static lv_timer_t *s_status_hide_timer = NULL;
 // True while the blink anim owns the eye height. apply_eye_open() must
 // not fight it during this window.
 static bool s_blinking = false;
+
+// Sparkle pool — created once in init, retargeted on every burst.
+typedef struct
+{
+    int16_t end_dx;
+    int16_t end_dy;
+} sparkle_target_t;
+
+static lv_obj_t *s_sparkle_container = NULL;
+static lv_obj_t *s_sparkles[SPARKLE_COUNT];
+static sparkle_target_t s_sparkle_targets[SPARKLE_COUNT];
 
 // ----------------------------------------------------------------- prototypes
 
@@ -310,15 +347,45 @@ void sage_face_init(void)
     s_p.pupil_l = make_filled_circle(s_p.head, PUPIL_DIA, -EYE_X_OFFSET, EYE_Y_OFFSET, color_pupil);
     s_p.pupil_r = make_filled_circle(s_p.head, PUPIL_DIA, EYE_X_OFFSET, EYE_Y_OFFSET, color_pupil);
 
-    // Mouth lines are centered horizontally on the face midline.
-    s_p.mouth_top = make_line(s_p.head, s_mouth_top_pts, 0, MOUTH_Y_OFFSET - MOUTH_W / 2, color_lips, MOUTH_THICK);
-    s_p.mouth_bot = make_line(s_p.head, s_mouth_bot_pts, 0, MOUTH_Y_OFFSET - MOUTH_W / 2, color_lips, MOUTH_THICK);
+    // Mouth lines are centered horizontally on the face midline. We
+    // override the auto-size after creation so both lips share the SAME
+    // fixed bbox — see MOUTH_BOX_H comment for the why. Then we re-align
+    // the now-fixed-size objects so their bbox center sits at
+    // MOUTH_Y_OFFSET below the head center.
+    s_p.mouth_top = make_line(s_p.head, s_mouth_top_pts, 0, MOUTH_Y_OFFSET, color_lips, MOUTH_THICK);
+    s_p.mouth_bot = make_line(s_p.head, s_mouth_bot_pts, 0, MOUTH_Y_OFFSET, color_lips, MOUTH_THICK);
+    lv_obj_set_size(s_p.mouth_top, MOUTH_W + MOUTH_THICK, MOUTH_BOX_H + MOUTH_THICK);
+    lv_obj_set_size(s_p.mouth_bot, MOUTH_W + MOUTH_THICK, MOUTH_BOX_H + MOUTH_THICK);
+    lv_obj_align(s_p.mouth_top, LV_ALIGN_CENTER, 0, MOUTH_Y_OFFSET);
+    lv_obj_align(s_p.mouth_bot, LV_ALIGN_CENTER, 0, MOUTH_Y_OFFSET);
 
     // Snap to idle pose, no cross-fade.
     s_pose_kind = SAGE_POSE_IDLE;
     s_pose_now = s_poses[SAGE_POSE_IDLE];
     apply_pose_visuals(&s_pose_now);
     apply_third_eye_pulse(&s_pose_now);
+
+    // Sparkle pool: full-screen container parented to the head (so
+    // sparkles drift with the face), pushed to the back of head's
+    // children so the face silhouette occludes any sparkle that overlaps
+    // it. Sparkles start invisible at the third-eye position; each burst
+    // randomizes their travel vectors and animates them outward.
+    lv_color_t color_sparkle = lv_color_make(170, 235, 255);
+    s_sparkle_container = lv_obj_create(s_p.head);
+    lv_obj_remove_style_all(s_sparkle_container);
+    lv_obj_set_size(s_sparkle_container, DISP_HOR_RES, DISP_VER_RES);
+    lv_obj_align(s_sparkle_container, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_clear_flag(s_sparkle_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_sparkle_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(s_sparkle_container, LV_OPA_TRANSP, 0);
+    for (int i = 0; i < SPARKLE_COUNT; i++)
+    {
+        s_sparkles[i] = make_filled_circle(s_sparkle_container, SPARKLE_DIA_MAX,
+                                           0, THIRD_EYE_Y_OFFSET, color_sparkle);
+        lv_obj_set_user_data(s_sparkles[i], (void *)(intptr_t)i);
+        lv_obj_set_style_bg_opa(s_sparkles[i], LV_OPA_TRANSP, 0);
+    }
+    lv_obj_move_background(s_sparkle_container);
 
     s_blink_timer = lv_timer_create(blink_timer_cb, blink_jitter_ms(), NULL);
     // Kick off the gaze drift right away — first shift in ~2 s, then re-
@@ -608,6 +675,74 @@ void sage_face_fade_in(uint32_t ms)
     lv_anim_start(&a);
 }
 
+// ----- sparkle burst ------------------------------------------------------
+
+static void anim_sparkle_progress(void *obj, int32_t v)
+{
+    // v is 0..1000. We use the same anim for translate + opacity so each
+    // sparkle costs one anim slot, not three.
+    lv_obj_t *o = (lv_obj_t *)obj;
+    int idx = (int)(intptr_t)lv_obj_get_user_data(o);
+    int32_t dx = ((int32_t)s_sparkle_targets[idx].end_dx * v) / 1000;
+    int32_t dy = ((int32_t)s_sparkle_targets[idx].end_dy * v) / 1000;
+    lv_obj_set_style_translate_x(o, dx, 0);
+    lv_obj_set_style_translate_y(o, dy, 0);
+
+    lv_opa_t opa;
+    if (v < 80)
+        opa = (lv_opa_t)((v * 255) / 80);
+    else if (v < 600)
+        opa = LV_OPA_COVER;
+    else
+        opa = (lv_opa_t)(255 - ((v - 600) * 255) / 400);
+    lv_obj_set_style_bg_opa(o, opa, 0);
+}
+
+void sage_face_burst_sparkles(void)
+{
+    if (!s_sparkle_container)
+        return;
+    for (int i = 0; i < SPARKLE_COUNT; i++)
+    {
+        lv_obj_t *s = s_sparkles[i];
+        lv_anim_del(s, anim_sparkle_progress);
+
+        uint32_t r = get_rand_32();
+        // Spread angles roughly evenly around the circle so we don't
+        // get all-on-one-side bursts when RNG clumps. Each sparkle gets
+        // an even slice + jitter inside its slice.
+        int slice = 360 / SPARKLE_COUNT;
+        int angle = (slice * i) + (int)(r % slice);
+        int dist = SPARKLE_TRAVEL_MIN +
+                   (int)((r >> 16) % (SPARKLE_TRAVEL_MAX - SPARKLE_TRAVEL_MIN));
+        uint32_t delay = (r >> 8) % SPARKLE_DELAY_MAX_MS;
+        int dia = SPARKLE_DIA_MIN +
+                  (int)((r >> 24) % (SPARKLE_DIA_MAX - SPARKLE_DIA_MIN + 1));
+
+        // lv_trigo_sin(angle+90) == cos(angle). Result is sin*32768.
+        s_sparkle_targets[i].end_dx =
+            (int16_t)(((int32_t)lv_trigo_sin((int16_t)(angle + 90)) * dist) >> LV_TRIGO_SHIFT);
+        s_sparkle_targets[i].end_dy =
+            (int16_t)(((int32_t)lv_trigo_sin((int16_t)angle) * dist) >> LV_TRIGO_SHIFT);
+
+        lv_obj_set_size(s, dia, dia);
+        lv_obj_align(s, LV_ALIGN_CENTER, 0, THIRD_EYE_Y_OFFSET);
+        lv_obj_set_style_translate_x(s, 0, 0);
+        lv_obj_set_style_translate_y(s, 0, 0);
+        lv_obj_set_style_bg_opa(s, LV_OPA_TRANSP, 0);
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, s);
+        lv_anim_set_values(&a, 0, 1000);
+        lv_anim_set_time(&a, SPARKLE_DURATION_MS);
+        lv_anim_set_delay(&a, delay);
+        lv_anim_set_exec_cb(&a, anim_sparkle_progress);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    }
+}
+
 // ============================================================================
 // Apply pose -> visuals
 // ============================================================================
@@ -697,7 +832,14 @@ static void apply_brows(const sage_pose_t *p)
 
 static void apply_mouth(int8_t curve, int8_t rest_open, uint8_t lipsync_open, int8_t lipsync_corner)
 {
-    const int center_y = MOUTH_W / 2;
+    // Locked-size mouth bbox: both lips share MOUTH_BOX_H. Compute every
+    // y around the bbox center so corner endpoints land at identical
+    // local coords in both lines (and therefore identical absolute
+    // positions on screen). Bbox is MOUTH_W + MOUTH_THICK wide so
+    // line_width ends padded equally on both sides; same for height.
+    const int center_x = (MOUTH_W + MOUTH_THICK) / 2;
+    const int center_y = (MOUTH_BOX_H + MOUTH_THICK) / 2;
+    const int half_w = MOUTH_W / 2;
 
     // 2x input gain so quieter voicelines still drive the mouth across
     // the full open range. Saturates at 255.
@@ -716,24 +858,30 @@ static void apply_mouth(int8_t curve, int8_t rest_open, uint8_t lipsync_open, in
         corner_x_inset = MOUTH_W / 4;
 
     int corner_y = center_y - curve;
-    int top_mid_y = center_y - open / 2;
-    int bot_mid_y = center_y + open / 2;
+    int half_open = open / 2;
 
-    s_mouth_top_pts[0].x = corner_x_inset;
-    s_mouth_top_pts[0].y = corner_y;
-    s_mouth_top_pts[1].x = MOUTH_W / 2;
-    s_mouth_top_pts[1].y = top_mid_y;
-    s_mouth_top_pts[2].x = MOUTH_W - corner_x_inset;
-    s_mouth_top_pts[2].y = corner_y;
-    lv_line_set_points(s_p.mouth_top, s_mouth_top_pts, 3);
-
-    s_mouth_bot_pts[0].x = corner_x_inset;
-    s_mouth_bot_pts[0].y = corner_y;
-    s_mouth_bot_pts[1].x = MOUTH_W / 2;
-    s_mouth_bot_pts[1].y = bot_mid_y;
-    s_mouth_bot_pts[2].x = MOUTH_W - corner_x_inset;
-    s_mouth_bot_pts[2].y = corner_y;
-    lv_line_set_points(s_p.mouth_bot, s_mouth_bot_pts, 3);
+    // Sample a sine half-cycle across MOUTH_PT_COUNT points. Endpoints
+    // sit at corner_y; interior points bulge by half_open scaled by
+    // sin(pi * t). Both lips share the same X grid; only the Y bulge
+    // sign differs (top arcs up, bot arcs down). lv_trigo_sin returns
+    // sin(angle_deg) << LV_TRIGO_SHIFT (i.e. * 32768).
+    const int x_left = center_x - half_w + corner_x_inset;
+    const int x_right = center_x + half_w - corner_x_inset;
+    const int x_span = x_right - x_left;
+    for (int i = 0; i < MOUTH_PT_COUNT; i++)
+    {
+        int x = x_left + (x_span * i) / (MOUTH_PT_COUNT - 1);
+        // angle goes 0 -> 180 across the lip; sin peaks at the middle.
+        int angle_deg = (180 * i) / (MOUTH_PT_COUNT - 1);
+        int32_t s = lv_trigo_sin((int16_t)angle_deg); // 0..32768
+        int bulge = (int)((s * (int32_t)half_open) >> LV_TRIGO_SHIFT);
+        s_mouth_top_pts[i].x = x;
+        s_mouth_top_pts[i].y = corner_y - bulge;
+        s_mouth_bot_pts[i].x = x;
+        s_mouth_bot_pts[i].y = corner_y + bulge;
+    }
+    lv_line_set_points(s_p.mouth_top, s_mouth_top_pts, MOUTH_PT_COUNT);
+    lv_line_set_points(s_p.mouth_bot, s_mouth_bot_pts, MOUTH_PT_COUNT);
 }
 
 static void anim_third_eye_opa(void *obj, int32_t v)
