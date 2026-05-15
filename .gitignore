@@ -1,0 +1,27 @@
+build/
+.build/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.dis
+
+# VS Code Pico extension generated
+.vscode/launch.json
+.vscode/settings.json
+.vscode/c_cpp_properties.json
+.vscode/cmake-kits.json
+.vscode/CMakePresets.json
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated assets (kept out of repo, deployed to SD)
+assets/voice/output/
