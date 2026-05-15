@@ -67,6 +67,16 @@ static void sleep_enter(void)
     gpio_put(PA_CTRL, 0);
     es8311_voice_mute(true);
 
+    // LVGL's flush_cb is fire-and-forget DMA. If we send a panel
+    // command while a previous flush is still draining over the
+    // shared QSPI bus the bytes interleave and the panel never sees
+    // a clean DISPLAY_OFF / SLEEP_IN — it just stays on showing the
+    // last frame. Wait for the bus to go idle before touching it.
+    while (dma_channel_is_busy(dma_tx))
+    {
+        tight_loop_contents();
+    }
+
     // Display: dim to zero before issuing the sleep-in so the panel
     // doesn't briefly flash full-brightness on the way out.
     AMOLED_1IN8_SetBrightness(0);
