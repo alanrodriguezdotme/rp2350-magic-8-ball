@@ -4,6 +4,7 @@
 #include "es8311.h"
 #include "ff.h"
 #include "f_util.h"
+#include "volume.h"
 
 #include "pico/stdlib.h"
 #include "hardware/dma.h"
@@ -52,6 +53,21 @@ typedef struct
     int eof_drain_count;
 
     uint32_t bytes_remaining; // PCM data bytes left to read from file
+    uint32_t data_start_pos;  // file offset of the first PCM byte (after header)
+    uint32_t data_size;       // total PCM bytes in this file
+
+    // Per-file peak normalization. Set in wav_player_play_file() by
+    // pre-scanning the data section for the absolute peak sample, then
+    // computing a Q15 fixed-point gain that maps that peak to ~80 %% of
+    // int16 full scale. Bounded to [1.0, 4.0] so a near-silent file
+    // doesn't get blown up to amplified noise.
+    //
+    // Why this matters: ElevenLabs renders voicelines at wildly varied
+    // peak levels and the conversion script does no normalization, so
+    // some files clip the analog amp regardless of the codec digital
+    // volume ("loud and glitchy") while others are barely audible.
+    // Normalizing in software gives every file the same headroom.
+    int32_t scale_q15; // 32768 = unity, 131072 = +12 dB
 
     // Lipsync stats from the most recently loaded chunk. Updated in
     // load_buffer(), read by wav_player_get_lipsync(). uint8 reads/writes
@@ -219,6 +235,78 @@ static bool parse_wav_header(FIL *fp, uint32_t *data_size_out)
     }
 }
 
+// ---- per-file peak normalization ------------------------------------------
+
+// Scan the data section for the absolute peak sample, then leave the
+// file positioned back at data_start_pos. Reads in BUF_SAMPLES chunks
+// using the playback buffer as scratch (we haven't started DMA yet).
+// Updates s_p.scale_q15. On any I/O failure, falls back to unity gain
+// rather than aborting playback.
+//
+// SD reads here are blocking — for a 5 s voiceline (~250 KB) this adds
+// ~50-150 ms of latency between play_file() being called and audio
+// actually starting. Acceptable; the alternative (scan twice or do an
+// online compressor) is more complex.
+static void scan_peak_and_set_scale(void)
+{
+    s_p.scale_q15 = 32768; // unity by default
+
+    if (s_p.data_size == 0)
+    {
+        return;
+    }
+
+    int16_t *scratch = (int16_t *)s_p.buf[0];
+    const UINT scratch_bytes = WAV_BUF_SAMPLES * sizeof(int16_t);
+
+    uint32_t remaining = s_p.data_size;
+    uint32_t peak = 0;
+    while (remaining > 0)
+    {
+        UINT to_read = (remaining < scratch_bytes) ? (UINT)remaining : scratch_bytes;
+        UINT br = 0;
+        if (f_read(&s_p.file, scratch, to_read, &br) != FR_OK || br == 0)
+        {
+            printf("[wav] peak scan: read failed, using unity gain\r\n");
+            f_lseek(&s_p.file, s_p.data_start_pos);
+            return;
+        }
+        UINT n = br / sizeof(int16_t);
+        for (UINT i = 0; i < n; i++)
+        {
+            int32_t v = scratch[i];
+            uint32_t a = (uint32_t)((v < 0) ? -v : v);
+            if (a > peak)
+            {
+                peak = a;
+            }
+        }
+        remaining -= br;
+    }
+
+    f_lseek(&s_p.file, s_p.data_start_pos);
+
+    if (peak == 0)
+    {
+        return; // file is silence; leave gain at unity
+    }
+
+    // Target peak: 80 %% of int16 full scale (26214). Leaves ~2 dB
+    // headroom for downstream processing without audibly losing top end.
+    // scale_q15 = (target * 32768) / peak; clamped to [1.0, 4.0].
+    uint32_t target = 26214;
+    int64_t s = ((int64_t)target * 32768) / (int64_t)peak;
+    if (s < 32768)
+        s = 32768; // never attenuate (peak already >= target)
+    else if (s > 131072)
+        s = 131072; // never boost more than +12 dB
+
+    s_p.scale_q15 = (int32_t)s;
+    printf("[wav] peak=%lu scale=%ld (gain=%ld %%)\r\n",
+           (unsigned long)peak, (long)s_p.scale_q15,
+           (long)((s_p.scale_q15 * 100) / 32768));
+}
+
 // ---- DMA ------------------------------------------------------------------
 
 static void __isr wav_player_dma_irq(void)
@@ -266,6 +354,25 @@ static UINT load_buffer(int idx)
     }
     s_p.bytes_remaining -= br;
     UINT samples = br / sizeof(int16_t);
+
+    // Apply per-file peak normalization in place before anything else
+    // sees the samples. Multiply by Q15 scale, shift back. Because
+    // scale_q15 was computed so that peak * scale_q15 / 32768 ~ 26214
+    // (80 %% of full-scale), the result fits in int16 without further
+    // clamping; we still saturate defensively in case the source had a
+    // single rogue sample at the absolute limit.
+    if (s_p.scale_q15 != 32768)
+    {
+        for (UINT i = 0; i < samples; i++)
+        {
+            int32_t v = ((int32_t)as_int16[i] * s_p.scale_q15) >> 15;
+            if (v > 32767)
+                v = 32767;
+            else if (v < -32768)
+                v = -32768;
+            as_int16[i] = (int16_t)v;
+        }
+    }
 
     // Compute RMS and ZCR before we destroy the int16 buffer with the
     // int32 expansion below. EOF chunks (samples=0) zero the stats so the
@@ -407,6 +514,7 @@ void wav_player_stop(void)
     s_p.playing = false;
     s_p.eof_pending = false;
     s_p.bytes_remaining = 0;
+    s_p.scale_q15 = 32768;
     s_p.lipsync_rms = 0;
     s_p.lipsync_zcr = 0;
 }
@@ -445,22 +553,31 @@ bool wav_player_play_file(const char *path)
         f_close(&s_p.file);
         return false;
     }
+    s_p.data_start_pos = (uint32_t)f_tell(&s_p.file);
+    s_p.data_size = data_size;
     s_p.bytes_remaining = data_size;
     s_p.eof_pending = false;
     s_p.eof_drain_count = 0;
+
+    // Pre-scan for the absolute peak and pick a gain that maps it to a
+    // safe headroom level. This is what keeps loud files from clipping
+    // and lifts quiet ones up to an audible level.
+    scan_peak_and_set_scale();
 
     // Re-assert mute=off + configured volume before each play. The
     // codec was occasionally drifting between plays and producing
     // randomly-quiet or randomly-loud-and-staticky audio; clobbering
     // it back to known-good state on every play_file fixes it.
     es8311_voice_mute(false);
-    es8311_voice_volume_set(pico_audio.volume);
+    es8311_voice_volume_set(volume_get());
 
-    // Drain any leftover words in the PIO TX FIFO before we start
-    // pushing fresh audio. Stale words from the boot beep or a prior
-    // playback's tail can otherwise leak into the first few frames as
-    // a click or burst of static.
-    pio_sm_clear_fifos(pico_audio.pio_2, pico_audio.sm_dout);
+    // Hard-reset the dout PIO state machine. Aborting the previous
+    // playback's DMA chain leaves the SM mid-frame with leftover bits
+    // in OSR and PC pointing somewhere inside left_loop / right_loop;
+    // the next push then lands misaligned and produces audibly random
+    // distortion that varies with where the abort happened. Clearing
+    // the FIFO alone is not enough \u2014 we need a full SM init.
+    audio_dout_reset();
 
     // Pre-fill both buffers before starting DMA so first chain flip has
     // valid audio to play.

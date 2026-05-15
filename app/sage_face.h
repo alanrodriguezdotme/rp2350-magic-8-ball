@@ -49,4 +49,10 @@ void sage_face_show_response(const char *text);
 // Fade the response text out over ~300 ms.
 void sage_face_hide_response(void);
 
+// Fade the entire face in from fully transparent to fully opaque over
+// `ms` milliseconds. Used for the boot intro so the sage materializes
+// instead of popping in. Calling more than once just restarts from the
+// current opacity.
+void sage_face_fade_in(uint32_t ms);
+
 #endif // SAGE_FACE_H

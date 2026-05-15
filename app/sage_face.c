@@ -276,6 +276,9 @@ void sage_face_init(void)
     lv_obj_align(s_p.head, LV_ALIGN_CENTER, 0, 0);
     lv_obj_clear_flag(s_p.head, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_opa(s_p.head, LV_OPA_TRANSP, 0);
+    // Start invisible — the boot sequence calls sage_face_fade_in() to
+    // bring the face up in sync with answer.wav.
+    lv_obj_set_style_opa(s_p.head, LV_OPA_TRANSP, 0);
 
     s_p.third_eye = make_filled_circle(s_p.head, THIRD_EYE_DIA, 0, THIRD_EYE_Y_OFFSET, color_third_eye);
 
@@ -467,6 +470,27 @@ void sage_face_show_response(const char *text)
 void sage_face_hide_response(void)
 {
     resp_fade_to(LV_OPA_TRANSP);
+}
+
+static void anim_head_opa(void *obj, int32_t v)
+{
+    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, 0);
+}
+
+void sage_face_fade_in(uint32_t ms)
+{
+    if (!s_p.head)
+        return;
+    lv_anim_del(s_p.head, anim_head_opa);
+    lv_opa_t cur = lv_obj_get_style_opa(s_p.head, 0);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_p.head);
+    lv_anim_set_values(&a, cur, LV_OPA_COVER);
+    lv_anim_set_time(&a, (uint32_t)ms);
+    lv_anim_set_exec_cb(&a, anim_head_opa);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_start(&a);
 }
 
 // ============================================================================
