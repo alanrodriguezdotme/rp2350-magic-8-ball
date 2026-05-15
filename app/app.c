@@ -1,6 +1,7 @@
 #include "app.h"
 #include "lvgl_glue.h"
 #include "sage_face.h"
+#include "sage_tone.h"
 #include "audio_test.h"
 #include "shake_detect.h"
 #include "sd.h"
@@ -22,7 +23,8 @@
 
 int app_run(void)
 {
-    if (DEV_Module_Init() != 0) {
+    if (DEV_Module_Init() != 0)
+    {
         return -1;
     }
 
@@ -31,7 +33,8 @@ int app_run(void)
     // If no host shows up, fall through and keep going — board still works
     // headless.
     stdio_init_all();
-    for (int i = 0; i < 30 && !stdio_usb_connected(); i++) {
+    for (int i = 0; i < 30 && !stdio_usb_connected(); i++)
+    {
         sleep_ms(100);
     }
 
@@ -57,10 +60,13 @@ int app_run(void)
 
     // Audio bring-up: codec + amp + a brief 440Hz beep so we know the
     // speaker is alive. Replace with real WAV playback later.
-    if (audio_test_init()) {
+    if (audio_test_init())
+    {
         printf("Magic 8-Ball: codec OK, beeping...\r\n");
         audio_test_play_tone(440, 800);
-    } else {
+    }
+    else
+    {
         printf("Magic 8-Ball: codec FAILED to init.\r\n");
     }
 
@@ -68,7 +74,8 @@ int app_run(void)
     // sage face and serial debug; WAV playback will just no-op once it
     // exists.
     bool sd_ok = sd_card_mount();
-    if (sd_ok) {
+    if (sd_ok)
+    {
         sd_card_list_root();
     }
 
@@ -78,7 +85,8 @@ int app_run(void)
     wav_player_init();
 
     bool vl_ok = false;
-    if (sd_ok) {
+    if (sd_ok)
+    {
         vl_ok = voicelines_scan("0:/voicelines");
     }
 
@@ -86,28 +94,74 @@ int app_run(void)
 
     uint32_t tick = 0;
     bool was_playing = false;
-    while (1) {
+    while (1)
+    {
         lv_task_handler();
         wav_player_poll();
 
         bool playing = wav_player_is_playing();
-        if (playing != was_playing) {
-            // Drive the face animation off the same edge that gates
-            // shake detection. Speaking pose comes up the instant a WAV
-            // starts and drops back to idle when it finishes.
-            sage_face_set_speaking(playing);
-            if (was_playing && !playing) {
-                // Playback just ended: reset the shake detector so any
-                // residual motion from the user shaking *during* playback
-                // doesn't fire instantly.
+
+        if (playing)
+        {
+            // Pull the latest amplitude / sibilance snapshot from the
+            // wav_player and feed it to the face. The face module low-
+            // passes internally with attack > release, so calling at
+            // ~200 Hz with a value that only updates per WAV chunk
+            // (~170 ms) still produces smooth mouth motion.
+            uint8_t rms = 0, zcr = 0;
+            wav_player_get_lipsync(&rms, &zcr);
+            sage_face_lipsync(rms, zcr);
+        }
+
+        if (playing != was_playing)
+        {
+            if (playing)
+            {
+                // Pose was already set when we started playback below.
+                // Nothing to do on the rising edge here.
+            }
+            else
+            {
+                // Playback just ended: drop back to idle pose and reset
+                // the shake detector so residual motion from the user
+                // shaking *during* playback doesn't fire instantly.
+                sage_face_set_pose(SAGE_POSE_IDLE);
+                // Force the mouth shut quickly by injecting one zero
+                // sample; the lipsync low-pass would otherwise hold
+                // the last RMS value visibly.
+                sage_face_lipsync(0, 128);
                 shake_detect_reset();
             }
         }
         was_playing = playing;
 
-        if (!playing && shake_detect_poll()) {
+        if (!playing && shake_detect_poll())
+        {
             const char *path = vl_ok ? voicelines_pick_random() : NULL;
-            if (!path || !wav_player_play_file(path)) {
+            if (path && wav_player_play_file(path))
+            {
+                sage_tone_t tone = sage_tone_from_path(path);
+                sage_pose_kind_t pose;
+                switch (tone)
+                {
+                case SAGE_TONE_OMINOUS:
+                    pose = SAGE_POSE_SPEAKING_OMINOUS;
+                    break;
+                case SAGE_TONE_SARCASTIC:
+                    pose = SAGE_POSE_SPEAKING_SARCASTIC;
+                    break;
+                case SAGE_TONE_DRY:
+                    pose = SAGE_POSE_SPEAKING_DRY;
+                    break;
+                default:
+                    pose = SAGE_POSE_SPEAKING_OMINOUS;
+                    break;
+                }
+                sage_face_set_pose(pose);
+                printf("[face] pose=%d for %s\r\n", (int)pose, path);
+            }
+            else
+            {
                 // No catalog or file open failed: stand-in beep so the
                 // shake at least produces audible feedback.
                 audio_test_play_tone(660, 400);
@@ -116,7 +170,8 @@ int app_run(void)
 
         DEV_Delay_ms(5);
         // Heartbeat every ~2s so we know main loop is alive.
-        if (++tick % 400 == 0) {
+        if (++tick % 400 == 0)
+        {
             printf("[hb] tick=%lu\r\n", (unsigned long)tick);
         }
     }
