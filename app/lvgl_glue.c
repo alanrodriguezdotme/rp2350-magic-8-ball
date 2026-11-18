@@ -23,7 +23,11 @@ static lv_color_t buf0[DISP_HOR_RES * DISP_VER_RES];
 static lv_indev_drv_t indev_ts;
 static uint16_t ts_x;
 static uint16_t ts_y;
-static lv_indev_state_t ts_act = LV_INDEV_STATE_RELEASED;
+// Set by the touch IRQ, consumed by ts_read_cb. The FT3168 shares I2C1 with
+// the IMU, PMIC and codec, so it must only be read from the main loop: an
+// I2C transfer started from the IRQ can land mid-transfer on another device
+// and wedge the bus (frozen UI, looping audio buffer).
+static volatile bool ts_pending = false;
 
 static struct repeating_timer lvgl_timer;
 
@@ -94,24 +98,33 @@ static void disp_rounder_cb(lv_disp_drv_t *disp, lv_area_t *area)
 
 static void touch_callback(uint gpio, uint32_t events)
 {
+    (void)events;
     if (gpio == Touch_INT_PIN)
     {
-        FT3168_Get_Point();
-        ts_x = FT3168.x_point;
-        ts_y = FT3168.y_point;
-        ts_act = LV_INDEV_STATE_PRESSED;
-        // Any touch counts as activity — even one that doesn't hit
-        // a widget keeps the sleep timer at bay.
-        sleep_mgr_notify_activity();
+        ts_pending = true;
     }
 }
 
 static void ts_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
+    (void)drv;
+    if (ts_pending)
+    {
+        ts_pending = false;
+        FT3168_Get_Point();
+        ts_x = FT3168.x_point;
+        ts_y = FT3168.y_point;
+        // Any touch counts as activity, even one that doesn't hit a
+        // widget, so it keeps the sleep timer at bay.
+        sleep_mgr_notify_activity();
+        data->state = LV_INDEV_STATE_PRESSED;
+    }
+    else
+    {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
     data->point.x = ts_x;
     data->point.y = ts_y;
-    data->state = ts_act;
-    ts_act = LV_INDEV_STATE_RELEASED;
 }
 
 static void dma_handler(void)
