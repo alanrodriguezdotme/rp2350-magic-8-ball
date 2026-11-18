@@ -90,7 +90,7 @@ pico_generate_pio_header(magic_8_ball ${CMAKE_CURRENT_LIST_DIR}/lib/audio_pio/au
                         OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/audio_pio)
 
 pico_set_program_name(magic_8_ball "magic_8_ball")
-pico_set_program_version(magic_8_ball "0.1")
+pico_set_program_version(magic_8_ball "1.0.0")
 
 pico_enable_stdio_uart(magic_8_ball 0)
 pico_enable_stdio_usb(magic_8_ball 1)
