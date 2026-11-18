@@ -28,6 +28,7 @@ static lv_indev_state_t ts_act = LV_INDEV_STATE_RELEASED;
 static struct repeating_timer lvgl_timer;
 
 static void disp_flush_cb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p);
+static void disp_rounder_cb(lv_disp_drv_t *disp, lv_area_t *area);
 static void touch_callback(uint gpio, uint32_t events);
 static void ts_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data);
 static void dma_handler(void);
@@ -42,9 +43,13 @@ void lvgl_glue_init(void)
     lv_disp_draw_buf_init(&disp_buf, buf0, NULL, DISP_HOR_RES * DISP_VER_RES);
     lv_disp_drv_init(&disp_drv);
     disp_drv.flush_cb = disp_flush_cb;
+    disp_drv.rounder_cb = disp_rounder_cb;
     disp_drv.draw_buf = &disp_buf;
     disp_drv.hor_res = DISP_HOR_RES;
     disp_drv.ver_res = DISP_VER_RES;
+    // Lets screen_orient flip the UI 180 degrees. Only 180 is used, which
+    // LVGL does in place on the draw buffer (no extra RAM).
+    disp_drv.sw_rotate = 1;
     lv_disp_drv_register(&disp_drv);
 
     lv_indev_drv_init(&indev_ts);
@@ -73,6 +78,18 @@ static void disp_flush_cb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t
                           color_p,
                           ((area->x2 + 1 - area->x1) * (area->y2 + 1 - area->y1)) * 2,
                           true);
+}
+
+// The SH8601 silently mangles window writes that start on an odd column or
+// row, so every dirty area is widened to even start / odd end. Both panel
+// dimensions are even, so this also survives the 180-degree flip.
+static void disp_rounder_cb(lv_disp_drv_t *disp, lv_area_t *area)
+{
+    (void)disp;
+    area->x1 &= ~1;
+    area->y1 &= ~1;
+    area->x2 |= 1;
+    area->y2 |= 1;
 }
 
 static void touch_callback(uint gpio, uint32_t events)

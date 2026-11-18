@@ -3,6 +3,7 @@
 #include "sage_face.h"
 #include "sage_tone.h"
 #include "sage_text.h"
+#include "screen_orient.h"
 #include "audio_test.h"
 #include "boot_button.h"
 #include "shake_detect.h"
@@ -64,6 +65,7 @@ int app_run(void)
     QMI8658_init();
 
     lvgl_glue_init();
+    screen_orient_init();
     sage_face_init();
 
     printf("Magic 8-Ball: sage is awake.\r\n");

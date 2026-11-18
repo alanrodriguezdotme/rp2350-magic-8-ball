@@ -1,2 +1,3 @@
-voicelines/raw/*
-voicelines/wav/*
+# Source MP3s from ElevenLabs. The converted WAVs in wav/ and sfx/ are
+# committed, since those are what goes on the SD card.
+raw/

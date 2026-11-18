@@ -39,10 +39,10 @@ void sage_face_lipsync(uint8_t rms_0_255, uint8_t zcr_0_255);
 // external hold so the auto-decay timer can run normally.
 void sage_face_set_listening(bool listening);
 
-// Show a caption-style response at the bottom of the screen. White text
-// with a black outline; fades in over ~300 ms. The text pointer must
-// remain valid for the lifetime of the displayed caption (the label
-// uses lv_label_set_text_static and does not copy). Passing NULL is
+// Show a response caption on the card's plate (Cinzel, gold); fades in
+// over ~300 ms and dismisses the boot title if it's still up. The text
+// pointer must remain valid for the lifetime of the displayed caption (the
+// label uses lv_label_set_text_static and does not copy). Passing NULL is
 // equivalent to sage_face_hide_response().
 void sage_face_show_response(const char *text);
 
@@ -59,8 +59,8 @@ void sage_face_show_status_bar(const char *left_text, const char *right_text);
 
 // Fade the entire face in from fully transparent to fully opaque over
 // `ms` milliseconds. Used for the boot intro so the sage materializes
-// instead of popping in. Calling more than once just restarts from the
-// current opacity.
+// instead of popping in. Also schedules the "THE SAGE" title to fade out
+// a few seconds after the fade-in completes.
 void sage_face_fade_in(uint32_t ms);
 
 // Fire a one-shot sparkle burst radiating outward from the third eye,
